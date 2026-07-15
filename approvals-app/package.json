@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "prebuild": "npm install --omit=dev",
     "build": "vite build",
     "lint": "eslint .",
     "preview": "vite preview"
@@ -12,6 +13,7 @@
   "dependencies": {
     "@rolldown/plugin-babel": "^0.2.3",
     "@vitejs/plugin-react": "^6.0.3",
+    "approvals-app": "file:",
     "autoprefixer": "^10.5.3",
     "babel-plugin-react-compiler": "^1.0.0",
     "lucide-react": "^1.24.0",

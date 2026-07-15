@@ -1,0 +1,6 @@
+{
+  "installCommand": "npm install --prefix approvals-app",
+  "buildCommand": "npm run build --prefix approvals-app",
+  "outputDirectory": "approvals-app/dist",
+  "framework": "vite"
+}
