@@ -1,0 +1,192 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer components {
+  .approvals-page {
+    background:
+      linear-gradient(180deg, rgba(15, 118, 110, 0.08), rgba(245, 247, 251, 0) 260px),
+      #f5f7fb;
+    min-height: 100vh;
+  }
+
+  .approval-hero {
+    border-radius: 8px;
+    background: #ffffff;
+    border: 1px solid #d8e0ea;
+    box-shadow: 0 8px 24px rgba(15, 23, 42, 0.06);
+  }
+
+  .approval-hero-strip {
+    height: 8px;
+    background: linear-gradient(90deg, #0f766e 0%, #2563eb 48%, #f59e0b 100%);
+  }
+
+  .approval-hero-content {
+    display: flex;
+    align-items: flex-end;
+    justify-content: space-between;
+    gap: 24px;
+  }
+
+  .approval-stats {
+    display: grid;
+    grid-template-columns: repeat(5, minmax(150px, 1fr));
+    gap: 12px;
+  }
+
+  .approval-filters {
+    border-radius: 8px;
+    border: 1px solid #d8e0ea;
+    background: #ffffff;
+    box-shadow: 0 4px 14px rgba(15, 23, 42, 0.05);
+  }
+
+  .approval-filter-row {
+    display: flex;
+    align-items: flex-end;
+    justify-content: space-between;
+    gap: 16px;
+  }
+
+  .approval-table-card {
+    border-radius: 8px;
+    border: 1px solid #d8e0ea;
+    background: #ffffff;
+    box-shadow: 0 8px 24px rgba(15, 23, 42, 0.06);
+  }
+
+  .approval-table-card table {
+    table-layout: auto;
+  }
+
+  .approval-table-card th {
+    background: #e6f4f1;
+    color: #073b35;
+    border-color: #bddbd5;
+  }
+
+  .approval-table-card tbody tr:hover {
+    background: #f0faf7 !important;
+  }
+
+  @media (max-width: 980px) {
+    .approval-hero-content,
+    .approval-filter-row {
+      align-items: stretch;
+      flex-direction: column;
+    }
+
+    .approval-stats {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+  }
+
+  @media (max-width: 560px) {
+    .approval-stats {
+      grid-template-columns: 1fr;
+    }
+  }
+}
+
+.approval-dark {
+  background:
+    linear-gradient(180deg, rgba(20, 184, 166, 0.16), rgba(13, 18, 28, 0) 280px),
+    #0d121c !important;
+  color: #e5edf7 !important;
+}
+
+.approval-dark .approval-hero,
+.approval-dark .approval-filters,
+.approval-dark .approval-table-card {
+  background: #141b29 !important;
+  border-color: #263347 !important;
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.26) !important;
+}
+
+.approval-dark .approval-hero-strip {
+  background: linear-gradient(90deg, #14b8a6 0%, #60a5fa 48%, #fbbf24 100%) !important;
+}
+
+.approval-dark .approval-stats > div {
+  background: #141b29 !important;
+  border-color: #2e3b51 !important;
+  color: #f1f5f9 !important;
+}
+
+.approval-dark h1,
+.approval-dark label,
+.approval-dark .text-slate-900,
+.approval-dark .text-slate-700,
+.approval-dark .text-slate-600 {
+  color: #e5edf7 !important;
+}
+
+.approval-dark .text-slate-500,
+.approval-dark .text-slate-400 {
+  color: #9aa8bc !important;
+}
+
+.approval-dark .bg-white,
+.approval-dark input,
+.approval-dark button,
+.approval-dark .page-size-select {
+  background-color: #111827 !important;
+  border-color: #314057 !important;
+  color: #e5edf7 !important;
+}
+
+.approval-dark input::placeholder {
+  color: #7f8ea3 !important;
+}
+
+.approval-dark .bg-teal-50 {
+  background-color: #123c3a !important;
+  color: #99f6e4 !important;
+}
+
+.approval-dark .theme-toggle {
+  background: #1f2a3b !important;
+  border-color: #3a4a63 !important;
+  color: #f8fafc !important;
+}
+
+.approval-dark .approval-table-card th {
+  background: #143834 !important;
+  color: #c7fff4 !important;
+  border-color: #22564f !important;
+}
+
+.approval-dark .approval-table-card th:first-child {
+  background: #0f766e !important;
+  color: #ffffff !important;
+}
+
+.approval-dark .approval-table-card td {
+  border-color: #263347 !important;
+  color: #d9e3f0 !important;
+}
+
+.approval-dark .approval-table-card tbody tr {
+  background-color: #111827 !important;
+}
+
+.approval-dark .approval-table-card tbody tr:nth-child(even) {
+  background-color: #151e2d !important;
+}
+
+.approval-dark .approval-table-card tbody tr:hover {
+  background: #1b2f33 !important;
+}
+
+.approval-dark .bg-amber-100 {
+  background-color: #3d2f10 !important;
+  color: #fde68a !important;
+  border-color: #8a6416 !important;
+}
+
+.approval-dark .bg-red-50 {
+  background-color: #3b1518 !important;
+  color: #fecaca !important;
+  border-color: #7f1d1d !important;
+}

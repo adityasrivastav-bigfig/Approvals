@@ -1,0 +1,8 @@
+{
+  "private": true,
+  "scripts": {
+    "dev": "cd approvals-app && npm run dev",
+    "build": "cd approvals-app && npm run build",
+    "preview": "cd approvals-app && npm run preview"
+  }
+}
