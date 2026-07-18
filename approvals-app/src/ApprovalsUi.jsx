@@ -1,8 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { AlertCircle, Check, Clock, Loader2, Moon, RefreshCw, Search, Send, Sun, X } from 'lucide-react';
+import { AlertCircle, Check, Clock, Loader2, Moon, RefreshCw, Search, Send, Sun, User, X } from 'lucide-react';
 
 const FETCH_URL = 'https://n.lovenspire.com/webhook/de9ca73d-8790-4e92-8ae2-3773ed3ca2fa';
 const UPDATE_URL = 'https://n.lovenspire.com/webhook/8f3d1499-4d62-4a86-8e74-c06440d9c675';
+const STATUS_UPDATE_URL = 'https://n.lovenspire.com/webhook/266de272-e178-4462-b75f-cfe6cf8c8370';
+const REVIEWER_NAME_KEY = 'approvals-reviewer-name';
 
 const SYNC_INTERVAL_MINUTES = 2;
 const SYNC_INTERVAL_MS = SYNC_INTERVAL_MINUTES * 60 * 1000;
@@ -77,6 +79,10 @@ function formatCountdown(ms) {
   return `${m}:${String(s).padStart(2, '0')}`;
 }
 
+function getCurrentTime() {
+  return Date.now();
+}
+
 function isNumericColumn(rows, col) {
   const vals = rows.map((r) => r[col]).filter((v) => !isEmptyValue(v));
   if (vals.length === 0) return false;
@@ -110,7 +116,41 @@ function hasMeaningfulDisplayData(row, columns, statusField) {
   return columns.some((col) => col !== statusField && !isIdColumn(col) && !isEmptyValue(row[col]));
 }
 
+function isDisplayRow(row, columns, statusField) {
+  return !isEmptyValue(row[statusField]) && hasMeaningfulDisplayData(row, columns, statusField);
+}
+
+function getRowEmail(row) {
+  return row.email ?? row.Email ?? row.EMAIL ?? row['Email Address'] ?? row['email address'] ?? '';
+}
+
+function getRowId(row, fallback) {
+  return row.id ?? row.ID ?? row.Id ?? fallback;
+}
+
+function mergePendingRows(list, pendingByKey, getKey) {
+  const pendingEntries = Object.entries(pendingByKey);
+  if (pendingEntries.length === 0) return list;
+
+  const usedPendingKeys = new Set();
+  const merged = list.map((row, idx) => {
+    const key = getKey(row, idx);
+    const pendingRow = pendingByKey[key];
+    if (!pendingRow) return row;
+
+    usedPendingKeys.add(key);
+    return { ...row, ...pendingRow };
+  });
+
+  pendingEntries.forEach(([key, pendingRow]) => {
+    if (!usedPendingKeys.has(key)) merged.push(pendingRow);
+  });
+
+  return merged;
+}
+
 export default function ApprovalsUI() {
+  const [reviewerName, setReviewerName] = useState(() => localStorage.getItem(REVIEWER_NAME_KEY) || '');
   const [rows, setRows] = useState([]);
   const [columns, setColumns] = useState([]);
   const [page, setPage] = useState(0);
@@ -127,6 +167,8 @@ export default function ApprovalsUI() {
 
   const pendingRef = useRef({});
   const nextSyncAtRef = useRef(0);
+  const trimmedReviewerName = reviewerName.trim();
+  const canChangeStatus = trimmedReviewerName.length > 0;
 
   const loadData = useCallback(async () => {
     setLoading(true);
@@ -152,8 +194,9 @@ export default function ApprovalsUI() {
       const data = await res.json();
       const list = Array.isArray(data) ? data : data.rows || data.data || [];
       if (!Array.isArray(list)) throw new Error('Unexpected response shape from backend');
-      setRows(list);
-      setColumns(list.length > 0 ? Object.keys(list[0]) : []);
+      const mergedList = mergePendingRows(list, pendingRef.current, rowKey);
+      setRows(mergedList);
+      setColumns(mergedList.length > 0 ? Object.keys(mergedList[0]) : []);
       setPage(0);
     } catch (e) {
       setError(`Could not load data (${e.message})`);
@@ -163,7 +206,7 @@ export default function ApprovalsUI() {
   }, []);
 
   useEffect(() => {
-    nextSyncAtRef.current = Date.now() + SYNC_INTERVAL_MS;
+    nextSyncAtRef.current = getCurrentTime() + SYNC_INTERVAL_MS;
     const timer = setTimeout(() => {
       void loadData();
     }, 0);
@@ -186,17 +229,20 @@ export default function ApprovalsUI() {
 
   const rowKey = (row, idx) => row.id ?? row.email ?? row.Email ?? String(idx);
 
+  const displayRows = useMemo(() => {
+    return rows.filter((row) => isDisplayRow(row, columns, statusField));
+  }, [rows, columns, statusField]);
+
   const filteredRows = useMemo(() => {
     const term = searchTerm.trim().toLowerCase();
-    return rows.filter((row) => {
-      if (!hasMeaningfulDisplayData(row, columns, statusField)) return false;
+    return displayRows.filter((row) => {
       const status = normalizeStatus(row[statusField], '');
       const matchesStatus = filterStatus === 'ALL' ? true : status === filterStatus;
       if (!matchesStatus) return false;
       if (!term) return true;
       return rowSearchText(row, [statusField, ...baseColumns]).includes(term);
     });
-  }, [rows, columns, statusField, filterStatus, searchTerm, baseColumns]);
+  }, [displayRows, statusField, filterStatus, searchTerm, baseColumns]);
 
   const orderedRows = useMemo(() => {
     const order = { PENDING: 0, APPROVE: 1, REJECT: 2, ERROR: 3, DONE: 4, STATUS: 5 };
@@ -219,10 +265,9 @@ export default function ApprovalsUI() {
   }, [baseColumns, displayedRows, orderedRows]);
 
   const summary = useMemo(() => {
-    const counts = { total: rows.length, pending: 0, approve: 0, reject: 0, error: 0, done: 0, status: 0 };
-    rows.forEach((row) => {
+    const counts = { total: displayRows.length, pending: 0, approve: 0, reject: 0, error: 0, done: 0, status: 0 };
+    displayRows.forEach((row) => {
       const s = normalizeStatus(row[statusField], '');
-      if (!s) return;
       if (s === 'PENDING') counts.pending += 1;
       else if (s === 'APPROVE') counts.approve += 1;
       else if (s === 'REJECT') counts.reject += 1;
@@ -231,16 +276,28 @@ export default function ApprovalsUI() {
       else if (s === 'STATUS') counts.status += 1;
     });
     return counts;
-  }, [rows, statusField]);
+  }, [displayRows, statusField]);
 
   const quickSearchHint = useMemo(() => {
     const sample = baseColumns.filter((c) => !numericCols.has(c)).slice(0, 3);
     return sample.length > 0 ? sample.join(', ') : 'any visible field';
   }, [baseColumns, numericCols]);
 
-  const queueStatusChange = (row, idx, newStatus) => {
+  const handleReviewerNameChange = (value) => {
+    setReviewerName(value);
+    const trimmed = value.trim();
+    if (trimmed) {
+      localStorage.setItem(REVIEWER_NAME_KEY, trimmed);
+      setError('');
+      return;
+    }
+
+    localStorage.removeItem(REVIEWER_NAME_KEY);
+  };
+
+  const queueApprovalChange = (row, idx, newStatus) => {
     const key = rowKey(row, idx);
-    const updatedRow = { ...row, [statusField]: newStatus };
+    const updatedRow = { ...row, [statusField]: newStatus, reviewerName: trimmedReviewerName };
     setRows((prev) => prev.map((item, i) => (rowKey(item, i) === key ? updatedRow : item)));
     const wasQueued = Object.prototype.hasOwnProperty.call(pendingRef.current, key);
     pendingRef.current[key] = updatedRow;
@@ -248,14 +305,69 @@ export default function ApprovalsUI() {
     setRowState((prev) => ({ ...prev, [key]: 'queued' }));
   };
 
+  const updateStatusChange = async (row, idx, newStatus) => {
+    const key = rowKey(row, idx);
+    const normalizedStatus = normalizeStatus(newStatus);
+    const updatedRow = { ...row, [statusField]: normalizedStatus, reviewerName: trimmedReviewerName };
+    const email = getRowEmail(row);
+    const id = getRowId(row, key);
+    const wasQueued = Object.prototype.hasOwnProperty.call(pendingRef.current, key);
+
+    if (wasQueued) {
+      delete pendingRef.current[key];
+      setQueuedCount(Object.keys(pendingRef.current).length);
+    }
+
+    setRows((prev) => prev.map((item, i) => (rowKey(item, i) === key ? updatedRow : item)));
+    setRowState((prev) => ({ ...prev, [key]: 'syncing' }));
+
+    try {
+      const res = await fetch(STATUS_UPDATE_URL, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id, email, status: normalizedStatus, reviewerName: trimmedReviewerName }),
+      });
+      if (!res.ok) throw new Error(`status ${res.status}`);
+
+      setError('');
+      setRowState((prev) => ({ ...prev, [key]: 'synced' }));
+      setTimeout(() => {
+        setRowState((prev) => {
+          const next = { ...prev };
+          delete next[key];
+          return next;
+        });
+      }, 1500);
+    } catch (e) {
+      setError(`Status update failed for ${email || 'this row'} (${e.message}).`);
+      setRowState((prev) => ({ ...prev, [key]: 'error' }));
+    }
+  };
+
+  const handleStatusChange = (row, idx, newStatus) => {
+    if (!canChangeStatus) {
+      setError('Please enter your name before changing a status.');
+      return;
+    }
+
+    const normalizedStatus = normalizeStatus(newStatus);
+    if (normalizedStatus === 'APPROVE') {
+      queueApprovalChange(row, idx, normalizedStatus);
+      return;
+    }
+
+    void updateStatusChange(row, idx, normalizedStatus);
+  };
+
   const flushQueue = useCallback(async () => {
     const pending = pendingRef.current;
     const keys = Object.keys(pending);
-    nextSyncAtRef.current = Date.now() + SYNC_INTERVAL_MS;
     if (keys.length === 0) return;
 
     const batch = keys.map((k) => pending[k]);
+    const reviewerNameForBatch = batch.find((row) => row.reviewerName)?.reviewerName || '';
     setSyncing(true);
+    nextSyncAtRef.current = getCurrentTime() + SYNC_INTERVAL_MS;
     setRowState((prev) => {
       const next = { ...prev };
       keys.forEach((k) => (next[k] = 'syncing'));
@@ -266,7 +378,7 @@ export default function ApprovalsUI() {
       const res = await fetch(UPDATE_URL, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ updates: batch }),
+        body: JSON.stringify({ reviewerName: reviewerNameForBatch, updates: batch }),
       });
       if (!res.ok) throw new Error(`status ${res.status}`);
 
@@ -303,7 +415,7 @@ export default function ApprovalsUI() {
 
   useEffect(() => {
     const tick = setInterval(() => {
-      setMsUntilSync(Math.max(0, nextSyncAtRef.current - Date.now()));
+      setMsUntilSync(Math.max(0, nextSyncAtRef.current - getCurrentTime()));
     }, 1000);
     return () => clearInterval(tick);
   }, []);
@@ -334,7 +446,7 @@ export default function ApprovalsUI() {
               Search, review, and update records without needing to understand the backend data.
             </p>
             <div className="mt-3 flex flex-wrap items-center gap-2 text-sm text-slate-600">
-              <span>{rows.length} rows</span>
+              <span>{summary.total} rows</span>
               {queuedCount > 0 && (
                 <span className="inline-flex items-center gap-1 rounded-full bg-amber-100 px-3 py-1 text-amber-900">
                   <Clock size={12} /> {queuedCount} queued | next sync in {formatCountdown(msUntilSync)}
@@ -370,6 +482,37 @@ export default function ApprovalsUI() {
               Refresh
             </button>
           </div>
+          </div>
+        </div>
+
+        <div className="approval-filters mb-4 rounded-lg border border-slate-200 bg-white p-4 shadow-sm">
+          <div className="approval-filter-row flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
+            <div className="w-full max-w-xl">
+              <label className="mb-2 block text-sm font-medium text-slate-700" htmlFor="reviewerName">
+                Your name
+              </label>
+              <div className="relative">
+                <User size={16} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+                <input
+                  id="reviewerName"
+                  value={reviewerName}
+                  onChange={(e) => handleReviewerNameChange(e.target.value)}
+                  placeholder="Enter your name before changing a status"
+                  className="w-full rounded-lg border border-slate-200 bg-white py-3 pl-10 pr-3 text-sm outline-none transition focus:border-teal-500 focus:ring-2 focus:ring-teal-100"
+                />
+              </div>
+            </div>
+            <div
+              className={`rounded-lg border px-4 py-3 text-sm ${
+                canChangeStatus
+                  ? 'border-emerald-200 bg-emerald-50 text-emerald-800'
+                  : 'border-amber-200 bg-amber-50 text-amber-900'
+              }`}
+            >
+              {canChangeStatus
+                ? `Status changes will be recorded under ${trimmedReviewerName}.`
+                : 'Status changes are locked until your name is filled.'}
+            </div>
           </div>
         </div>
 
@@ -495,13 +638,15 @@ export default function ApprovalsUI() {
                         <div className="relative w-[118px]">
                           <select
                             value={currentStatus}
-                            onChange={(e) => queueStatusChange(row, idx, e.target.value)}
+                            onChange={(e) => handleStatusChange(row, idx, e.target.value)}
+                            disabled={!canChangeStatus}
+                            title={canChangeStatus ? 'Change status' : 'Enter your name before changing status'}
                             style={{
                               backgroundColor: style.bg,
                               color: style.text,
                               borderColor: style.border,
                             }}
-                            className="w-full appearance-none rounded-lg border px-3 py-2 text-xs font-semibold shadow-sm outline-none focus:ring-2 focus:ring-teal-200"
+                            className="w-full appearance-none rounded-lg border px-3 py-2 text-xs font-semibold shadow-sm outline-none focus:ring-2 focus:ring-teal-200 disabled:cursor-not-allowed disabled:opacity-60"
                           >
                             {STATUS_OPTIONS.map((opt) => (
                               <option key={opt.value} value={opt.value}>
@@ -556,7 +701,7 @@ export default function ApprovalsUI() {
 
         <div className="mt-4 flex flex-wrap items-center justify-between gap-4 px-1">
           <StatusSummary
-            rows={rows}
+            rows={displayRows}
             statusField={statusField}
             filterStatus={filterStatus}
             setFilterStatus={(s) => {
@@ -628,17 +773,18 @@ function SummaryCard({ label, value, tone }) {
 
 function StatusSummary({ rows, statusField, filterStatus, setFilterStatus }) {
   const counts = useMemo(() => {
-    const c = { PENDING: 0, APPROVE: 0, REJECT: 0, ERROR: 0, DONE: 0, STATUS: 0 };
+    const c = { PENDING: 0, APPROVE: 0, REJECT: 0, ERROR: 0, DONE: 0, STATUS: 0, OTHER: 0 };
     rows.forEach((r) => {
       const s = normalizeStatus(r[statusField], '');
-      if (!s) return;
-      if (c[s] !== undefined) c[s] += 1;
+      if (!s) c.OTHER += 1;
+      else if (c[s] !== undefined) c[s] += 1;
+      else c.OTHER += 1;
     });
     return c;
   }, [rows, statusField]);
 
   const buttons = [
-    { key: 'ALL', label: 'All', count: rows.filter((r) => !isEmptyValue(r[statusField])).length },
+    { key: 'ALL', label: 'All', count: rows.length },
     { key: 'PENDING', label: 'Pending', count: counts.PENDING },
     { key: 'APPROVE', label: 'Approve', count: counts.APPROVE },
     { key: 'REJECT', label: 'Reject', count: counts.REJECT },
