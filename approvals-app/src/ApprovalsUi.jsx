@@ -5,7 +5,6 @@ const FETCH_URL = 'https://n.lovenspire.com/webhook/de9ca73d-8790-4e92-8ae2-3773
 const UPDATE_URL = 'https://n.lovenspire.com/webhook/8f3d1499-4d62-4a86-8e74-c06440d9c675';
 const STATUS_UPDATE_URL = 'https://n.lovenspire.com/webhook/266de272-e178-4462-b75f-cfe6cf8c8370';
 const REVIEWER_NAME_KEY = 'approvals-reviewer-name';
-const APPROVALS_CACHE_KEY = 'approvals-data-cache';
 
 const SYNC_INTERVAL_MINUTES = 2;
 const SYNC_INTERVAL_MS = SYNC_INTERVAL_MINUTES * 60 * 1000;
@@ -129,22 +128,6 @@ function getRowId(row, fallback) {
   return row.id ?? row.ID ?? row.Id ?? fallback;
 }
 
-function getCachedApprovalsData() {
-  try {
-    const cached = JSON.parse(localStorage.getItem(APPROVALS_CACHE_KEY) || '{}');
-    const rows = Array.isArray(cached.rows) ? cached.rows : [];
-    const columns = Array.isArray(cached.columns) && cached.columns.length > 0 ? cached.columns : Object.keys(rows[0] || {});
-    return { rows, columns };
-  } catch {
-    localStorage.removeItem(APPROVALS_CACHE_KEY);
-    return { rows: [], columns: [] };
-  }
-}
-
-function saveApprovalsCache(rows, columns) {
-  localStorage.setItem(APPROVALS_CACHE_KEY, JSON.stringify({ rows, columns, savedAt: new Date().toISOString() }));
-}
-
 function mergePendingRows(list, pendingByKey, getKey) {
   const pendingEntries = Object.entries(pendingByKey);
   if (pendingEntries.length === 0) return list;
@@ -168,8 +151,8 @@ function mergePendingRows(list, pendingByKey, getKey) {
 
 export default function ApprovalsUI() {
   const [reviewerName, setReviewerName] = useState(() => localStorage.getItem(REVIEWER_NAME_KEY) || '');
-  const [rows, setRows] = useState(() => getCachedApprovalsData().rows);
-  const [columns, setColumns] = useState(() => getCachedApprovalsData().columns);
+  const [rows, setRows] = useState([]);
+  const [columns, setColumns] = useState([]);
   const [page, setPage] = useState(0);
   const [pageSize, setPageSize] = useState(50);
   const [filterStatus, setFilterStatus] = useState('ALL');
@@ -202,7 +185,6 @@ export default function ApprovalsUI() {
           amount: (Math.random() * 1000).toFixed(2),
           status: ['PENDING', 'APPROVED', 'REJECTED', 'DONE'][i % 4],
         }));
-        saveApprovalsCache(mock, Object.keys(mock[0] || {}));
         setRows(mock);
         setColumns(Object.keys(mock[0] || {}));
         setSelectedKeys(new Set());
@@ -217,7 +199,6 @@ export default function ApprovalsUI() {
       if (!Array.isArray(list)) throw new Error('Unexpected response shape from backend');
       const mergedList = mergePendingRows(list, pendingRef.current, rowKey);
       const mergedColumns = mergedList.length > 0 ? Object.keys(mergedList[0]) : [];
-      saveApprovalsCache(mergedList, mergedColumns);
       setRows(mergedList);
       setColumns(mergedColumns);
       setSelectedKeys(new Set());
@@ -364,7 +345,6 @@ export default function ApprovalsUI() {
         const updatedRow = updateMap.get(rowKey(item, i));
         return updatedRow ? { ...item, ...updatedRow } : item;
       });
-      saveApprovalsCache(nextRows, columns);
       return nextRows;
     });
 
