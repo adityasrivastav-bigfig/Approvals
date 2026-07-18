@@ -5,6 +5,7 @@ const FETCH_URL = 'https://n.lovenspire.com/webhook/de9ca73d-8790-4e92-8ae2-3773
 const UPDATE_URL = 'https://n.lovenspire.com/webhook/8f3d1499-4d62-4a86-8e74-c06440d9c675';
 const STATUS_UPDATE_URL = 'https://n.lovenspire.com/webhook/266de272-e178-4462-b75f-cfe6cf8c8370';
 const REVIEWER_NAME_KEY = 'approvals-reviewer-name';
+const APPROVALS_CACHE_KEY = 'approvals-data-cache';
 
 const SYNC_INTERVAL_MINUTES = 2;
 const SYNC_INTERVAL_MS = SYNC_INTERVAL_MINUTES * 60 * 1000;
@@ -128,6 +129,22 @@ function getRowId(row, fallback) {
   return row.id ?? row.ID ?? row.Id ?? fallback;
 }
 
+function getCachedApprovalsData() {
+  try {
+    const cached = JSON.parse(localStorage.getItem(APPROVALS_CACHE_KEY) || '{}');
+    const rows = Array.isArray(cached.rows) ? cached.rows : [];
+    const columns = Array.isArray(cached.columns) && cached.columns.length > 0 ? cached.columns : Object.keys(rows[0] || {});
+    return { rows, columns };
+  } catch {
+    localStorage.removeItem(APPROVALS_CACHE_KEY);
+    return { rows: [], columns: [] };
+  }
+}
+
+function saveApprovalsCache(rows, columns) {
+  localStorage.setItem(APPROVALS_CACHE_KEY, JSON.stringify({ rows, columns, savedAt: new Date().toISOString() }));
+}
+
 function mergePendingRows(list, pendingByKey, getKey) {
   const pendingEntries = Object.entries(pendingByKey);
   if (pendingEntries.length === 0) return list;
@@ -151,8 +168,8 @@ function mergePendingRows(list, pendingByKey, getKey) {
 
 export default function ApprovalsUI() {
   const [reviewerName, setReviewerName] = useState(() => localStorage.getItem(REVIEWER_NAME_KEY) || '');
-  const [rows, setRows] = useState([]);
-  const [columns, setColumns] = useState([]);
+  const [rows, setRows] = useState(() => getCachedApprovalsData().rows);
+  const [columns, setColumns] = useState(() => getCachedApprovalsData().columns);
   const [page, setPage] = useState(0);
   const [pageSize, setPageSize] = useState(50);
   const [filterStatus, setFilterStatus] = useState('ALL');
@@ -163,6 +180,8 @@ export default function ApprovalsUI() {
   const [syncing, setSyncing] = useState(false);
   const [queuedCount, setQueuedCount] = useState(0);
   const [msUntilSync, setMsUntilSync] = useState(SYNC_INTERVAL_MS);
+  const [selectedKeys, setSelectedKeys] = useState(() => new Set());
+  const [bulkStatus, setBulkStatus] = useState('');
   const [darkMode, setDarkMode] = useState(false);
 
   const pendingRef = useRef({});
@@ -183,8 +202,10 @@ export default function ApprovalsUI() {
           amount: (Math.random() * 1000).toFixed(2),
           status: ['PENDING', 'APPROVED', 'REJECTED', 'DONE'][i % 4],
         }));
+        saveApprovalsCache(mock, Object.keys(mock[0] || {}));
         setRows(mock);
         setColumns(Object.keys(mock[0] || {}));
+        setSelectedKeys(new Set());
         setPage(0);
         return;
       }
@@ -195,8 +216,11 @@ export default function ApprovalsUI() {
       const list = Array.isArray(data) ? data : data.rows || data.data || [];
       if (!Array.isArray(list)) throw new Error('Unexpected response shape from backend');
       const mergedList = mergePendingRows(list, pendingRef.current, rowKey);
+      const mergedColumns = mergedList.length > 0 ? Object.keys(mergedList[0]) : [];
+      saveApprovalsCache(mergedList, mergedColumns);
       setRows(mergedList);
-      setColumns(mergedList.length > 0 ? Object.keys(mergedList[0]) : []);
+      setColumns(mergedColumns);
+      setSelectedKeys(new Set());
       setPage(0);
     } catch (e) {
       setError(`Could not load data (${e.message})`);
@@ -207,11 +231,13 @@ export default function ApprovalsUI() {
 
   useEffect(() => {
     nextSyncAtRef.current = getCurrentTime() + SYNC_INTERVAL_MS;
+    if (rows.length > 0) return undefined;
+
     const timer = setTimeout(() => {
       void loadData();
     }, 0);
     return () => clearTimeout(timer);
-  }, [loadData]);
+  }, [loadData, rows.length]);
 
   const statusField = useMemo(
     () => columns.find((c) => c.toLowerCase() === 'status') || 'status',
@@ -259,6 +285,21 @@ export default function ApprovalsUI() {
     return orderedRows.slice(start, start + pageSize);
   }, [orderedRows, page, pageSize]);
 
+  const displayedRowKeys = useMemo(
+    () => displayedRows.map((row, idx) => rowKey(row, idx)),
+    [displayedRows]
+  );
+
+  const selectedRows = useMemo(() => {
+    return rows
+      .map((row, idx) => ({ row, idx, key: rowKey(row, idx) }))
+      .filter((item) => selectedKeys.has(item.key));
+  }, [rows, selectedKeys]);
+
+  const selectedCount = selectedKeys.size;
+  const allDisplayedSelected =
+    displayedRowKeys.length > 0 && displayedRowKeys.every((key) => selectedKeys.has(key));
+
   const visibleColumns = useMemo(() => {
     const sourceRows = displayedRows.length > 0 ? displayedRows : orderedRows;
     return baseColumns.filter((col) => getColumnFill(sourceRows, col) > 0);
@@ -295,68 +336,149 @@ export default function ApprovalsUI() {
     localStorage.removeItem(REVIEWER_NAME_KEY);
   };
 
-  const queueApprovalChange = (row, idx, newStatus) => {
-    const key = rowKey(row, idx);
-    const updatedRow = { ...row, [statusField]: newStatus, reviewerName: trimmedReviewerName };
-    setRows((prev) => prev.map((item, i) => (rowKey(item, i) === key ? updatedRow : item)));
-    const wasQueued = Object.prototype.hasOwnProperty.call(pendingRef.current, key);
-    pendingRef.current[key] = updatedRow;
-    if (!wasQueued) setQueuedCount((count) => count + 1);
-    setRowState((prev) => ({ ...prev, [key]: 'queued' }));
-  };
-
-  const updateStatusChange = async (row, idx, newStatus) => {
-    const key = rowKey(row, idx);
-    const normalizedStatus = normalizeStatus(newStatus);
-    const updatedRow = { ...row, [statusField]: normalizedStatus, reviewerName: trimmedReviewerName };
-    const email = getRowEmail(row);
-    const id = getRowId(row, key);
-    const wasQueued = Object.prototype.hasOwnProperty.call(pendingRef.current, key);
-
-    if (wasQueued) {
-      delete pendingRef.current[key];
-      setQueuedCount(Object.keys(pendingRef.current).length);
+  const applyStatusToRows = (items, newStatus, { clearAfter = false } = {}) => {
+    if (!canChangeStatus) {
+      setError('Please enter your name before changing statuses.');
+      return;
     }
 
-    setRows((prev) => prev.map((item, i) => (rowKey(item, i) === key ? updatedRow : item)));
-    setRowState((prev) => ({ ...prev, [key]: 'syncing' }));
+    if (items.length === 0) {
+      setError('Select at least one row before changing statuses.');
+      return;
+    }
 
-    try {
-      const res = await fetch(STATUS_UPDATE_URL, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ id, email, status: normalizedStatus, reviewerName: trimmedReviewerName }),
+    const normalizedStatus = normalizeStatus(newStatus);
+    const updates = items.map(({ row, idx, key }) => {
+      const rowKeyValue = key ?? rowKey(row, idx);
+      return {
+        key: rowKeyValue,
+        row: { ...row, [statusField]: normalizedStatus, reviewerName: trimmedReviewerName },
+        email: getRowEmail(row),
+        id: getRowId(row, rowKeyValue),
+      };
+    });
+    const updateMap = new Map(updates.map((item) => [item.key, item.row]));
+
+    setRows((prev) => {
+      const nextRows = prev.map((item, i) => {
+        const updatedRow = updateMap.get(rowKey(item, i));
+        return updatedRow ? { ...item, ...updatedRow } : item;
       });
-      if (!res.ok) throw new Error(`status ${res.status}`);
+      saveApprovalsCache(nextRows, columns);
+      return nextRows;
+    });
 
-      setError('');
-      setRowState((prev) => ({ ...prev, [key]: 'synced' }));
-      setTimeout(() => {
+    if (normalizedStatus === 'APPROVE') {
+      updates.forEach(({ key, row: updatedRow }) => {
+        pendingRef.current[key] = updatedRow;
+      });
+      setQueuedCount(Object.keys(pendingRef.current).length);
+      setRowState((prev) => {
+        const next = { ...prev };
+        updates.forEach(({ key }) => {
+          next[key] = 'queued';
+        });
+        return next;
+      });
+      if (clearAfter) clearSelection();
+      return;
+    }
+
+    updates.forEach(({ key }) => {
+      if (Object.prototype.hasOwnProperty.call(pendingRef.current, key)) {
+        delete pendingRef.current[key];
+      }
+    });
+    setQueuedCount(Object.keys(pendingRef.current).length);
+    setRowState((prev) => {
+      const next = { ...prev };
+      updates.forEach(({ key }) => {
+        next[key] = 'syncing';
+      });
+      return next;
+    });
+
+    void Promise.all(
+      updates.map(({ id, email }) =>
+        fetch(STATUS_UPDATE_URL, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ id, email, status: normalizedStatus, reviewerName: trimmedReviewerName }),
+        }).then((res) => {
+          if (!res.ok) throw new Error(`status ${res.status}`);
+        })
+      )
+    )
+      .then(() => {
+        setError('');
         setRowState((prev) => {
           const next = { ...prev };
-          delete next[key];
+          updates.forEach(({ key }) => {
+            next[key] = 'synced';
+          });
           return next;
         });
-      }, 1500);
-    } catch (e) {
-      setError(`Status update failed for ${email || 'this row'} (${e.message}).`);
-      setRowState((prev) => ({ ...prev, [key]: 'error' }));
-    }
+        setTimeout(() => {
+          setRowState((prev) => {
+            const next = { ...prev };
+            updates.forEach(({ key }) => {
+              delete next[key];
+            });
+            return next;
+          });
+        }, 1500);
+      })
+      .catch((e) => {
+        setError(`Status update failed for one or more selected rows (${e.message}).`);
+        setRowState((prev) => {
+          const next = { ...prev };
+          updates.forEach(({ key }) => {
+            next[key] = 'error';
+          });
+          return next;
+        });
+      });
+
+    if (clearAfter) clearSelection();
   };
 
   const handleStatusChange = (row, idx, newStatus) => {
-    if (!canChangeStatus) {
-      setError('Please enter your name before changing a status.');
-      return;
-    }
+    const key = rowKey(row, idx);
+    const targetRows = selectedKeys.has(key) && selectedRows.length > 0 ? selectedRows : [{ row, idx, key }];
+    applyStatusToRows(targetRows, newStatus, { clearAfter: selectedKeys.has(key) });
+  };
 
-    const normalizedStatus = normalizeStatus(newStatus);
-    if (normalizedStatus === 'APPROVE') {
-      queueApprovalChange(row, idx, normalizedStatus);
-      return;
-    }
+  const toggleRowSelection = (key) => {
+    setSelectedKeys((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  };
 
-    void updateStatusChange(row, idx, normalizedStatus);
+  const toggleCurrentPageSelection = () => {
+    setSelectedKeys((prev) => {
+      const next = new Set(prev);
+      if (allDisplayedSelected) {
+        displayedRowKeys.forEach((key) => next.delete(key));
+      } else {
+        displayedRowKeys.forEach((key) => next.add(key));
+      }
+      return next;
+    });
+  };
+
+  const clearSelection = () => {
+    setSelectedKeys(new Set());
+  };
+
+  const applyBulkStatus = (newStatus) => {
+    if (!newStatus) return;
+
+    setBulkStatus(newStatus);
+    applyStatusToRows(selectedRows, newStatus, { clearAfter: true });
+    setBulkStatus('');
   };
 
   const flushQueue = useCallback(async () => {
@@ -582,12 +704,65 @@ export default function ApprovalsUI() {
           </p>
         </div>
 
+        <div className="approval-filters mb-4 rounded-lg border border-slate-200 bg-white p-4 shadow-sm">
+          <div className="flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
+            <div>
+              <div className="text-sm font-semibold text-slate-800">Bulk update</div>
+              <p className="mt-1 text-xs text-slate-500">
+                {selectedCount} selected {selectedCount === 1 ? 'row' : 'rows'}
+              </p>
+            </div>
+
+            <div className="flex flex-wrap items-center gap-2">
+              <button
+                onClick={toggleCurrentPageSelection}
+                disabled={displayedRowKeys.length === 0}
+                className="inline-flex items-center gap-2 rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40"
+              >
+                <Check size={14} />
+                {allDisplayedSelected ? 'Unselect page' : 'Select page'}
+              </button>
+              <select
+                value={bulkStatus}
+                onChange={(e) => applyBulkStatus(e.target.value)}
+                disabled={!canChangeStatus || selectedCount === 0}
+                className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm shadow-sm disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                <option value="">Change selected to...</option>
+                {STATUS_OPTIONS.map((opt) => (
+                  <option key={opt.value} value={opt.value}>
+                    {opt.label}
+                  </option>
+                ))}
+              </select>
+              <button
+                onClick={clearSelection}
+                disabled={selectedCount === 0}
+                className="inline-flex items-center gap-2 rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40"
+              >
+                <X size={14} />
+                Clear
+              </button>
+            </div>
+          </div>
+        </div>
+
         <div className="approval-table-card overflow-hidden rounded-lg border border-slate-200 bg-white shadow-sm">
           <div className="overflow-x-auto">
             <table className="w-full border-collapse text-sm">
               <thead className="sticky top-0 z-10">
                 <tr className="bg-[#EAF3F1]">
-                  <th className="sticky left-0 z-30 w-36 border-b border-r border-teal-200 bg-teal-800 px-4 py-3 text-left text-[11px] font-semibold uppercase tracking-[0.16em] text-white">
+                  <th className="sticky left-0 z-40 w-12 border-b border-r border-teal-200 bg-teal-800 px-3 py-3 text-center">
+                    <input
+                      type="checkbox"
+                      checked={allDisplayedSelected}
+                      onChange={toggleCurrentPageSelection}
+                      disabled={displayedRowKeys.length === 0}
+                      aria-label="Select all rows on this page"
+                      className="h-4 w-4 rounded border-slate-300 accent-teal-700 disabled:cursor-not-allowed"
+                    />
+                  </th>
+                  <th className="sticky left-12 z-30 w-36 border-b border-r border-teal-200 bg-teal-800 px-4 py-3 text-left text-[11px] font-semibold uppercase tracking-[0.16em] text-white">
                     Status
                   </th>
                   {visibleColumns.map((col) => (
@@ -606,7 +781,7 @@ export default function ApprovalsUI() {
               <tbody>
                 {rows.length === 0 && (
                   <tr>
-                    <td colSpan={visibleColumns.length + 2} className="px-4 py-16 text-center text-sm text-slate-400">
+                    <td colSpan={visibleColumns.length + 3} className="px-4 py-16 text-center text-sm text-slate-400">
                       {loading ? 'Loading...' : 'No rows to show.'}
                     </td>
                   </tr>
@@ -614,7 +789,7 @@ export default function ApprovalsUI() {
 
                 {rows.length > 0 && displayedRows.length === 0 && (
                   <tr>
-                    <td colSpan={visibleColumns.length + 2} className="px-4 py-16 text-center text-sm text-slate-500">
+                    <td colSpan={visibleColumns.length + 3} className="px-4 py-16 text-center text-sm text-slate-500">
                       No records match the current filters.
                     </td>
                   </tr>
@@ -625,22 +800,44 @@ export default function ApprovalsUI() {
                   const currentStatus = normalizeStatus(row[statusField]);
                   const style = statusStyle(currentStatus);
                   const state = rowState[key];
+                  const selected = selectedKeys.has(key);
 
                   return (
                     <tr
                       key={key}
                       className="transition-colors hover:bg-[#F1FAF7]"
                       style={{
-                        backgroundColor: state === 'synced' ? '#F0FDF4' : idx % 2 === 0 ? '#FFFFFF' : '#FAFBFD',
+                        backgroundColor: selected
+                          ? '#ECFDF5'
+                          : state === 'synced'
+                            ? '#F0FDF4'
+                            : idx % 2 === 0
+                              ? '#FFFFFF'
+                              : '#FAFBFD',
                       }}
                     >
-                      <td className="sticky left-0 z-20 border-b border-r border-slate-100 bg-inherit px-2 py-2 align-top">
+                      <td className="sticky left-0 z-30 border-b border-r border-slate-100 bg-inherit px-3 py-3 text-center align-top">
+                        <input
+                          type="checkbox"
+                          checked={selected}
+                          onChange={() => toggleRowSelection(key)}
+                          aria-label="Select row"
+                          className="h-4 w-4 rounded border-slate-300 accent-teal-700"
+                        />
+                      </td>
+                      <td className="sticky left-12 z-20 border-b border-r border-slate-100 bg-inherit px-2 py-2 align-top">
                         <div className="relative w-[118px]">
                           <select
                             value={currentStatus}
                             onChange={(e) => handleStatusChange(row, idx, e.target.value)}
                             disabled={!canChangeStatus}
-                            title={canChangeStatus ? 'Change status' : 'Enter your name before changing status'}
+                            title={
+                              !canChangeStatus
+                                ? 'Enter your name before changing status'
+                                : selected && selectedCount > 1
+                                  ? `Change status for ${selectedCount} selected rows`
+                                  : 'Change status'
+                            }
                             style={{
                               backgroundColor: style.bg,
                               color: style.text,
